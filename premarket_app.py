@@ -1,286 +1,309 @@
-"""
-F&O Premarket (NSE Pre-Open) Tracker — Streamlit app
-==========================================================
-Deployed on Streamlit Community Cloud (or run locally with `streamlit run app.py`).
-
-This build is locked to the F&O (Futures & Options eligible stocks) segment only —
-there is no index/segment picker, it always pulls key=FNO from NSE.
-
-NSE pre-open session is live 9:00–9:15 AM IST. Outside that window this will
-show a STALE (previous session's) snapshot — the app warns you when that's the case.
-
-NOTE: NSE blocks many datacenter IPs (this includes Streamlit Cloud's servers,
-same as Colab). If you get repeated 401/403 errors, see the README for
-workarounds (run locally, or route through a proxy).
-"""
-
-import time
+import streamlit as st
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
 from datetime import datetime
 
-import numpy as np
-import pandas as pd
-import pytz
-import requests
-import streamlit as st
-import plotly.graph_objects as go
+BG = '#F5F7FA'
+CARD = '#FFFFFF'
+BORDER = '#E7EBF0'
+PRIMARY = '#4F46E5'
+UP = '#16A34A'
+DOWN = '#DC2626'
+UP_SOFT = '#DCFCE7'
+DOWN_SOFT = '#FEE2E2'
+TEXT = '#1E293B'
+MUTED = '#64748B'
 
-# -------------------------------------------------------------------
-# Page config
-# -------------------------------------------------------------------
-st.set_page_config(page_title="F&O Premarket Tracker", layout="wide")
+Securities_FNO = [
+    "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES",
+    "FORCEMOT", "JUBLFOOD", "PNBHOUSING", "IDEA", "BIOCON", "DALBHARAT", "MPHASIS", "NAM-INDIA", "BPCL", "KEI",
+    "TCS", "AMBER", "PREMIERENE", "SIEMENS", "ASTRAL", "SWIGGY", "POLICYBZR", "GLENMARK", "EXIDEIND",
+    "ADANIENSOL", "HINDPETRO", "DIVISLAB", "AMBUJACEM", "CGPOWER", "PAGEIND", "ADANIGREEN",
+    "POWERINDIA", "BDL", "KPITTECH", "GODREJCP", "NUVAMA", "DABUR", "FORTIS", "LUPIN",
+    "SOLARINDS", "CROMPTON", "GVT&D", "HEROMOTOCO", "NAUKRI", "INDIANB", "SHREECEM",
+    "PFC", "HINDZINC", "RECLTD", "BSE", "COCHINSHIP", "KFINTECH", "NATIONALUM", "RVNL", "OFSS",
+    "RADICO", "CHOLAFIN", "JSWENERGY", "SAIL", "WAAREEENER", "THINDIA", "GODFRYPHLP", "SUZLON", "LICHSGFIN",
+    "DELHIVERY", "CDSL", "MOTILALOFS", "LODHA", "MANKIND", "MOTHERSON", "NYKAA", "TVSMOTOR", "VBL",
+    "ZYDUSLIFE", "MFSL", "OBEROIRLTY", "PRESTIGE", "PIIND", "GMRAIRPORT", "PGEL", "COFORGE", "MCX",
+    "SHRIRAMFIN", "VEDL", "INDUSTOWER", "TORNTPHARM", "CUMMINSIND", "GODREJPROP", "HAVELLS", "BOSCHLTD",
+    "NMDC", "ASHOKLEY", "INOXWIND", "RBLBANK", "UNOMINDA", "COLPAL", "BHARATFORG", "PHOENIXLTD", "ABB",
+    "IREDA", "BANKINDIA", "BLUESTARCO", "SRF", "TATAPOWER", "VOLTAS", "MAZDOCK", "DMART", "SUPREMEIND", "ALKEM",
+    "SONACOMS", "AUROPHARMA", "BAJAJHLDNG", "HAL", "IRFC", "LAURUSLABS", "MANAPPURAM", "MARICO", "MUTHOOTFIN", "NHPC",
+    "PERSISTENT", "PETRONET", "PIDILITIND", "SBICARD", "UNITDSPR", "APLAPOLLO", "TATAELXSI", "INDHOTEL", "JINDALSTEL",
+    "UPL", "HYUNDAI", "ABCAPITAL", "BRITANNIA", "GAIL", "CONCOR", "CAMS", "HDFCAMC", "POLYCAB", "OIL", "KALYANKJIL", "ICICIGI"
+]
 
-# Locked to F&O securities only — no other segment is fetched.
-FNO_KEY = "FNO"
+
+@st.cache_resource
+def get_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.nseindia.com/market-data/pre-open-market-cotd",
+    })
+    s.get("https://www.nseindia.com", timeout=5)
+    return s
 
 
-# -------------------------------------------------------------------
-# NSE session / fetch helpers
-# -------------------------------------------------------------------
-def get_nse_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
+def fetch_preopen(session):
+    url = "https://www.nseindia.com/api/market-data-pre-open?key=ALL"
+    try:
+        r = session.get(url, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException:
+        session.cookies.clear()
+        session.get("https://www.nseindia.com", timeout=5)
+        r = session.get(url, timeout=5)
+        r.raise_for_status()
+        return r.json()
+
+
+def to_dataframe(raw, symbols):
+    rows = [
         {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://www.nseindia.com/market-data/pre-open-market-cotation",
+            "symbol": item["metadata"]["symbol"],
+            "price": item["metadata"]["lastPrice"],
+            "change": item["metadata"]["pChange"],
         }
-    )
-    session.get("https://www.nseindia.com", timeout=10)
-    time.sleep(1)
-    return session
-
-
-def fetch_preopen_data(session: requests.Session, key: str = FNO_KEY, retries: int = 3):
-    url = f"https://www.nseindia.com/api/market-data-pre-open?key={key}"
-    last_exc = None
-    for _ in range(retries):
-        try:
-            resp = session.get(url, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-        except requests.RequestException as exc:
-            last_exc = exc
-        time.sleep(2)
-        session = get_nse_session()
-    if last_exc:
-        raise last_exc
-    resp.raise_for_status()
-
-
-def parse_preopen(data: dict) -> pd.DataFrame:
-    rows = []
-    for item in data.get("data", []):
-        meta = item.get("metadata", {})
-        pre = item.get("detail", {}).get("preOpenMarket", {})
-        rows.append(
-            {
-                "Symbol": meta.get("symbol"),
-                "PrevClose": meta.get("previousClose"),
-                "IEP": pre.get("IEP", meta.get("iep")),
-                "Change": meta.get("change"),
-                "PctChange": meta.get("pChange"),
-                "YearHigh": meta.get("yearHigh"),
-                "YearLow": meta.get("yearLow"),
-                "FinalQuantity": pre.get("finalQuantity"),
-                "TotalTradedVolume": pre.get("totalTradedVolume"),
-                "TotalTurnover": meta.get("totalTurnover"),
-                "MarketCap": meta.get("marketCap"),
-                "TotalBuyQuantity": pre.get("totalBuyQuantity"),
-                "TotalSellQuantity": pre.get("totalSellQuantity"),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def add_trade_signals(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    buy = df["TotalBuyQuantity"].fillna(0)
-    sell = df["TotalSellQuantity"].fillna(0)
-    total_qty = buy + sell
-
-    df["OrderImbalance"] = np.where(total_qty > 0, (buy - sell) / total_qty, np.nan)
-    df["BuySellRatio"] = np.where(sell > 0, buy / sell, np.nan)
-    df["DistFrom52WHighPct"] = np.where(
-        df["YearHigh"] > 0, (df["IEP"] - df["YearHigh"]) / df["YearHigh"] * 100, np.nan
-    )
-    df["DistFrom52WLowPct"] = np.where(
-        df["YearLow"] > 0, (df["IEP"] - df["YearLow"]) / df["YearLow"] * 100, np.nan
-    )
-    df["NearCircuitFlag"] = df["PctChange"].abs() >= 9
-    df["WatchScore"] = df["PctChange"].abs() * (1 + df["OrderImbalance"].abs().fillna(0))
-    return df
-
-
-def is_preopen_session_live():
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-    if now.weekday() >= 5:
-        return False, "Weekend — market closed, data is stale.", now
-    start = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    end = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    if start <= now <= end:
-        return True, "Live pre-open window.", now
-    return (
-        False,
-        "Outside 9:00–9:15 AM IST window — this is a STALE/previous-session snapshot, not live premarket.",
-        now,
-    )
-
-
-@st.cache_data(ttl=25, show_spinner=False)
-def load_data() -> pd.DataFrame:
-    session = get_nse_session()
-    raw = fetch_preopen_data(session, key=FNO_KEY)
-    df = parse_preopen(raw)
-    df = df.dropna(subset=["PctChange"]).sort_values("PctChange", ascending=False)
-    df = add_trade_signals(df)
-    return df
-
-
-# -------------------------------------------------------------------
-# Chart builders (Plotly, renders natively in Streamlit)
-# -------------------------------------------------------------------
-def make_bar_chart(df: pd.DataFrame) -> go.Figure:
-    plot_df = df.dropna(subset=["PctChange"]).sort_values("PctChange", ascending=True)
-    colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in plot_df["PctChange"]]
-    labels = [
-        f"{row.PctChange:+.2f}%  (₹{row.Change:+.2f})" if pd.notna(row.Change) else f"{row.PctChange:+.2f}%"
-        for row in plot_df.itertuples()
+        for item in raw["data"]
+        if item["metadata"]["symbol"] in symbols
     ]
-
-    fig = go.Figure(
-        go.Bar(
-            x=plot_df["PctChange"],
-            y=plot_df["Symbol"],
-            orientation="h",
-            marker_color=colors,
-            text=labels,
-            textposition="outside",
-            hovertemplate="%{y}: %{x:.2f}%<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        title="F&O Premarket Movement — All Stocks",
-        xaxis_title="% Change (Premarket vs Prev Close)",
-        height=max(500, 22 * len(plot_df)),
-        margin=dict(l=10, r=80, t=50, b=40),
-        showlegend=False,
-    )
-    fig.add_vline(x=0, line_color="black", line_width=1)
-    return fig
+    df = pd.DataFrame(rows)
+    return df.sort_values("change", ascending=True).reset_index(drop=True)
 
 
-def make_donut_chart(df: pd.DataFrame) -> go.Figure:
-    up = int((df["PctChange"] > 0).sum())
-    down = int((df["PctChange"] < 0).sum())
-    flat = int((df["PctChange"] == 0).sum())
-    values, labels, colors = [], [], []
-    for v, l, c in zip([up, down, flat], [f"Up ({up})", f"Down ({down})", f"Flat ({flat})"], ["#2ecc71", "#e74c3c", "#95a5a6"]):
-        if v > 0:
-            values.append(v)
-            labels.append(l)
-            colors.append(c)
-    fig = go.Figure(go.Pie(values=values, labels=labels, hole=0.5, marker_colors=colors))
-    fig.update_layout(title="Market Breadth", height=400, margin=dict(l=10, r=10, t=50, b=10))
-    return fig
+st.set_page_config(page_title="Securities_FNO Pre-Market Dashboard", layout="wide", page_icon="📊")
+
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"] {{
+    font-family: 'Inter', sans-serif;
+}}
+
+.stApp {{
+    background-color: {BG};
+}}
+
+#MainMenu, footer, header {{visibility: hidden;}}
+
+.block-container {{
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}}
+
+.dash-title {{
+    font-size: 28px;
+    font-weight: 800;
+    color: {TEXT};
+    margin-bottom: 2px;
+}}
+.dash-sub {{
+    font-size: 14px;
+    color: {MUTED};
+    font-weight: 500;
+}}
+.live-dot {{
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: {UP};
+    margin-right: 6px;
+}}
+
+.kpi-card {{
+    background-color: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+    padding: 18px 20px;
+    height: 100%;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04), 0 1px 2px rgba(16, 24, 40, 0.06);
+}}
+.kpi-label {{
+    font-size: 12px;
+    color: {MUTED};
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}}
+.kpi-value {{
+    font-size: 24px;
+    font-weight: 700;
+    color: {TEXT};
+}}
+.kpi-value.up {{ color: {UP}; }}
+.kpi-value.down {{ color: {DOWN}; }}
+.kpi-badge {{
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin-top: 8px;
+}}
+.kpi-badge.up {{ background-color: {UP_SOFT}; color: {UP}; }}
+.kpi-badge.down {{ background-color: {DOWN_SOFT}; color: {DOWN}; }}
+
+.chart-panel {{
+    background-color: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 16px;
+    padding: 24px;
+    margin-top: 20px;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04), 0 1px 2px rgba(16, 24, 40, 0.06);
+}}
+.panel-heading {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {TEXT};
+    margin-bottom: 16px;
+}}
+
+div.stButton > button {{
+    background-color: {PRIMARY};
+    color: #FFFFFF;
+    border: none;
+    border-radius: 10px;
+    font-weight: 600;
+    padding: 8px 22px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}}
+div.stButton > button:hover {{
+    background-color: #4338CA;
+    color: #FFFFFF;
+}}
+
+.footer-note {{
+    font-size: 12px;
+    color: {MUTED};
+    margin-top: 18px;
+}}
+</style>
+""", unsafe_allow_html=True)
 
 
-# -------------------------------------------------------------------
-# UI
-# -------------------------------------------------------------------
-st.title("📈 F&O Premarket (NSE Pre-Open) Tracker")
-st.caption("Segment locked to F&O-eligible securities (futures & options underlyings).")
+@st.cache_data(ttl=60)
+def load_data():
+    session = get_session()
+    raw = fetch_preopen(session)
+    return to_dataframe(raw, Securities_FNO)
 
-with st.sidebar:
-    st.header("Settings")
-    top_n = st.slider("Top N gainers/losers to show", 5, 50, 30)
-    watch_n = st.slider("Watchlist size", 5, 30, 15)
-    auto_refresh = st.checkbox("Auto-refresh every 30s (during 9:00–9:15 AM IST)")
-    manual_refresh = st.button("🔄 Refresh now")
 
-if manual_refresh:
-    st.cache_data.clear()
-
-live, note, now = is_preopen_session_live()
-st.caption(f"Snapshot time: {now.strftime('%Y-%m-%d %H:%M:%S IST')}")
-if not live:
-    st.warning(f"⚠️ {note}")
+header_col1, header_col2 = st.columns([5, 1])
+with header_col1:
+    st.markdown('<div class="dash-title">Securities_FNO Pre-Market Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dash-sub">NSE India &nbsp;·&nbsp; Pre-Open Session Overview</div>', unsafe_allow_html=True)
+with header_col2:
+    st.write("")
+    if st.button("↻ Refresh", use_container_width=True):
+        st.cache_data.clear()
 
 try:
-    with st.spinner("Fetching F&O data from NSE..."):
-        df = load_data()
+    df = load_data()
 except Exception as e:
-    st.error(
-        "Could not fetch data from NSE. This usually means NSE's bot-check blocked "
-        "this server's IP (common on cloud-hosted deployments). Try 'Refresh now', "
-        "or run the app locally — see the README for details.\n\n"
-        f"Error: {e}"
-    )
+    st.markdown(f"""
+    <div class="chart-panel">
+        <div class="panel-heading" style="color:{DOWN};">Unable to fetch data</div>
+        <div style="color:{TEXT};">{e}</div>
+    </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
-if df.empty:
-    st.info("No premarket data returned. Try again closer to 9:00–9:15 AM IST on a trading day.")
-    st.stop()
+top_loser = df.iloc[0]
+top_gainer = df.iloc[-1]
+timestamp = datetime.now().strftime("%d %b %Y, %H:%M:%S")
+up_count = int((df["change"] >= 0).sum())
+down_count = int((df["change"] < 0).sum())
+ratio = up_count / down_count if down_count > 0 else float('inf')
 
-# --- Summary metrics ---
-up = int((df["PctChange"] > 0).sum())
-down = int((df["PctChange"] < 0).sum())
-flat = int((df["PctChange"] == 0).sum())
-total = len(df)
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total F&O stocks", total)
-c2.metric("Up", up, f"{up/total*100:.1f}%")
-c3.metric("Down", down, f"{down/total*100:.1f}%")
-c4.metric("Flat", flat)
-
-# --- Charts ---
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.plotly_chart(make_bar_chart(df), use_container_width=True)
-with col2:
-    st.plotly_chart(make_donut_chart(df), use_container_width=True)
-
-# --- Watchlist ---
-st.subheader(f"🎯 Must-check Watchlist (Top {watch_n} by move + order-imbalance conviction)")
-watch_cols = [
-    "Symbol", "IEP", "PctChange", "OrderImbalance", "BuySellRatio",
-    "DistFrom52WHighPct", "DistFrom52WLowPct", "NearCircuitFlag", "WatchScore",
-]
-watch_cols = [c for c in watch_cols if c in df.columns]
-watchlist_df = df.dropna(subset=["WatchScore"]).sort_values("WatchScore", ascending=False).head(watch_n)
-st.dataframe(watchlist_df[watch_cols].round(2), use_container_width=True, hide_index=True)
-
-circuit_hits = df[df["NearCircuitFlag"] == True]  # noqa: E712
-if len(circuit_hits) > 0:
-    st.warning(f"{len(circuit_hits)} stock(s) showing premarket move ≥9% — verify circuit limit before trading.")
-    st.dataframe(circuit_hits[["Symbol", "PctChange"]].round(2), use_container_width=True, hide_index=True)
-
-# --- Gainers / Losers ---
-gcol, lcol = st.columns(2)
-with gcol:
-    st.subheader(f"🟢 Top Gainers ({min(top_n, up)} of {up})")
-    gainers = df[df["PctChange"] > 0].sort_values("PctChange", ascending=False).head(top_n)
-    st.dataframe(gainers[["Symbol", "PrevClose", "IEP", "PctChange"]].round(2), use_container_width=True, hide_index=True)
-with lcol:
-    st.subheader(f"🔴 Top Losers ({min(top_n, down)} of {down})")
-    losers = df[df["PctChange"] < 0].sort_values("PctChange", ascending=True).head(top_n)
-    st.dataframe(losers[["Symbol", "PrevClose", "IEP", "PctChange"]].round(2), use_container_width=True, hide_index=True)
-
-# --- Full data table ---
-with st.expander("📋 Full F&O premarket data — every stock, every field"):
-    st.dataframe(df.sort_values("PctChange", ascending=False), use_container_width=True, hide_index=True)
-
-st.caption(
-    "Data source: NSE India pre-open API (key=FNO). This is descriptive market data, not investment advice. "
-    "Always verify live price/quantity before placing an order."
+st.markdown(
+    f'<div class="dash-sub"><span class="live-dot"></span>Last updated {timestamp} IST</div>',
+    unsafe_allow_html=True
 )
+st.write("")
 
-# --- Auto-refresh loop (simple, Streamlit-friendly) ---
-if auto_refresh:
-    time.sleep(30)
-    st.cache_data.clear()
-    st.rerun()
+k1, k2, k3, k4, k5 = st.columns(5)
+with k1:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">Advancers</div>
+        <div class="kpi-value up">{up_count}</div>
+        <div class="kpi-badge up">of 50 stocks</div></div>""", unsafe_allow_html=True)
+with k2:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">Decliners</div>
+        <div class="kpi-value down">{down_count}</div>
+        <div class="kpi-badge down">of 50 stocks</div></div>""", unsafe_allow_html=True)
+with k3:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">A/D Ratio</div>
+        <div class="kpi-value">{ratio:.2f}</div>
+        <div class="kpi-badge up" style="background-color:#EEF2FF; color:{PRIMARY};">advance / decline</div></div>""",
+        unsafe_allow_html=True)
+with k4:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">Top Gainer</div>
+        <div class="kpi-value up">{top_gainer['symbol']}</div>
+        <div class="kpi-badge up">+{top_gainer['change']:.2f}%</div></div>""", unsafe_allow_html=True)
+with k5:
+    st.markdown(f"""<div class="kpi-card">
+        <div class="kpi-label">Top Loser</div>
+        <div class="kpi-value down">{top_loser['symbol']}</div>
+        <div class="kpi-badge down">{top_loser['change']:.2f}%</div></div>""", unsafe_allow_html=True)
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-heading">Premarket Movement — % Change</div>', unsafe_allow_html=True)
+    fig1, ax1 = plt.subplots(figsize=(10, 11))
+    fig1.patch.set_facecolor(CARD)
+    colors = [UP if c >= 0 else DOWN for c in df["change"]]
+    ax1.set_facecolor(CARD)
+    ax1.barh(df["symbol"], df["change"], color=colors, height=0.6)
+    ax1.axvline(0, color=BORDER, linewidth=1)
+    ax1.tick_params(colors=MUTED, labelsize=9)
+    for label in ax1.get_yticklabels():
+        label.set_color(TEXT)
+    for spine in ax1.spines.values():
+        spine.set_visible(False)
+    ax1.grid(axis='x', color=BORDER, linewidth=0.8)
+    ax1.set_axisbelow(True)
+    for i, change in enumerate(df["change"]):
+        ax1.text(change, i, f' {change:+.2f}%', va='center',
+                  color=TEXT, fontsize=8,
+                  ha='left' if change >= 0 else 'right')
+    st.pyplot(fig1, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-heading">Market Breadth</div>', unsafe_allow_html=True)
+    fig2, ax2 = plt.subplots(figsize=(5, 5))
+    fig2.patch.set_facecolor(CARD)
+    ax2.set_facecolor(CARD)
+    wedges, texts, autotexts = ax2.pie(
+        [up_count, down_count],
+        labels=[f"Up\n{up_count}", f"Down\n{down_count}"],
+        colors=[UP, DOWN], wedgeprops={"width": 0.42, "edgecolor": CARD, "linewidth": 3},
+        autopct="%1.0f%%", startangle=90,
+        textprops={"color": TEXT, "fontsize": 10, "fontweight": "bold"}
+    )
+    for at in autotexts:
+        at.set_color('#FFFFFF')
+        at.set_fontweight('bold')
+    st.pyplot(fig2, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="footer-note">Data source: NSE India &nbsp;·&nbsp; Auto-refreshes every 60 seconds &nbsp;·&nbsp; '
+    'Click Refresh for an immediate update</div>',
+    unsafe_allow_html=True
+)
