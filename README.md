@@ -1,84 +1,63 @@
-# NSE OI Spurts Dashboard
+# F&O Premarket (NSE Pre-Open) Tracker
 
-A Streamlit app that fetches live "OI Spurts" data from NSE India
-(https://www.nseindia.com/market-data/oi-spurts) and shows which symbol
-has the top % change in Open Interest, with a chart of the top 10 movers.
+A Streamlit app that pulls the NSE pre-open (9:00–9:15 AM IST) snapshot for
+**F&O-eligible securities only** (`key=FNO`) and surfaces gainers/losers,
+market breadth, order-imbalance signals, and a near-circuit watchlist.
+
+Outside the 9:00–9:15 AM IST window, the app clearly labels the data as a
+stale/previous-session snapshot rather than pretending it's live.
 
 ## Files
-- `app.py` — OI Spurts Streamlit app (live Open Interest movers + option-chain drill-down)
-- `premarket_app.py` — F&O universe premarket tracker Streamlit app (pre-open session, 9:00-9:15 AM IST)
-- `nse_oi_spurts.py` — plain command-line version of the OI Spurts scraper (no Streamlit)
+
+- `app.py` — the Streamlit app
 - `requirements.txt` — Python dependencies
 
 ## Run locally
+
 ```bash
 pip install -r requirements.txt
-streamlit run app.py              # OI Spurts dashboard
-streamlit run premarket_app.py    # Premarket tracker
-```
-Then open the local URL Streamlit prints (usually http://localhost:8501).
-
-## Push to GitHub
-```bash
-git init
-git add app.py requirements.txt README.md nse_oi_spurts.py
-git commit -m "NSE OI Spurts Streamlit app"
-git branch -M main
-git remote add origin https://github.com/<your-username>/<your-repo>.git
-git push -u origin main
+streamlit run app.py
 ```
 
-## Deploy on Streamlit Community Cloud
-1. Go to https://share.streamlit.io and sign in with GitHub.
-2. Click "New app".
-3. Select your repo, branch (`main`), and set the main file path to `app.py`.
-4. Click "Deploy".
+Running locally from a residential IP is the most reliable way to avoid NSE's
+bot-check (see "NSE IP blocking" below).
 
-## ⚠️ Important limitation: NSE blocks cloud IPs
-NSE India's servers frequently block requests coming from datacenter /
-cloud IP ranges — which is exactly what Streamlit Cloud, GitHub Actions,
-Heroku, Render, etc. all use. Practically, this means:
+## Deploy on GitHub + Streamlit Community Cloud
 
-- **Locally (your home Wi-Fi):** usually works fine.
-- **Deployed on Streamlit Cloud:** may get blocked (403 or empty response).
-  The app is built to fail gracefully and show a clear message instead of
-  crashing, but it may not reliably return live data once deployed.
+1. Create a new GitHub repo (e.g. `nifty-fno-premarket-tracker`) and push these
+   two files to it:
+   ```bash
+   git init
+   git add app.py requirements.txt README.md
+   git commit -m "F&O premarket tracker"
+   git branch -M main
+   git remote add origin https://github.com/<your-username>/<repo-name>.git
+   git push -u origin main
+   ```
+2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with
+   GitHub.
+3. Click **"New app"**, pick your repo/branch, and set the main file path to
+   `app.py`.
+4. Click **Deploy**.
 
-The app now has two built-in mitigations:
-1. **Longer timeout + exponential backoff** (30s timeout, 4 retries) —
-   handles cases where NSE is just slow rather than fully blocking.
-2. **`nsepython` fallback** — if the direct `requests` approach fails,
-   the app automatically tries `nsepython`, a community library built
-   specifically to survive NSE's cookie/anti-bot checks. It's not
-   guaranteed to work from every cloud IP either, but it's noticeably
-   more reliable than plain `requests` in practice.
+## NSE IP blocking (important)
 
-### If it's still blocked after both attempts
-- **Residential proxy (most reliable fix):** sign up for a scraping
-  proxy service (e.g. ScraperAPI, Bright Data, Smartproxy). Add the
-  proxy URL to Streamlit Cloud's app secrets as:
-  ```toml
-  PROXY_URL = "http://user:pass@proxy-host:port"
-  ```
-  The app already reads this automatically (`_get_proxies()` in
-  `app.py`) and routes requests through it.
-- **Fetch locally, serve from the cloud:** run `nse_oi_spurts.py` on
-  your own machine on a schedule (cron / Task Scheduler), have it write
-  to a CSV or small database (e.g. a free Postgres on Supabase/Neon),
-  and point the Streamlit Cloud app at that instead of calling NSE
-  directly.
-- **Self-host:** run the Streamlit app on a home server or a VPS with a
-  residential-like IP instead of Streamlit Community Cloud.
+NSE aggressively blocks requests coming from known datacenter/cloud IP
+ranges — this includes Streamlit Community Cloud, Google Colab, AWS, GCP,
+Azure, etc. If the deployed app repeatedly errors with 401/403:
 
-## Note on premarket_app.py timing
-NSE's pre-open session only runs ~9:00-9:15 AM IST on trading days. Outside
-that window the API still responds, but with a stale snapshot from the
-previous session — the app displays a clear green/orange banner telling you
-which case you're in, so you never mistake old data for a live premarket read.
+- Use the **"🔄 Refresh now"** button — sometimes a fresh session cookie gets
+  through.
+- Run the app **locally** on a normal home/office connection, where NSE
+  generally doesn't block you.
+- Route requests through a residential/rotating proxy (set up your own
+  `requests` proxy config in `get_nse_session()`), or
+- Self-host on a VPS with a non-datacenter-flagged IP (results vary).
 
-## Note on NSE's JSON field names
-NSE occasionally changes the exact field names in their API responses.
-If the "% change in OI" column doesn't populate, the app will show you
-the raw column names it received — update the `CANDIDATES` dictionary
-near the top of `app.py` (or `normalize_columns()` in `nse_oi_spurts.py`)
-to match.
+This is an NSE-side restriction, not a bug in the app.
+
+## Disclaimer
+
+This tool shows descriptive premarket market data only. It is not investment
+advice. Always verify live price and quantity on your broker's terminal
+before placing any order.
