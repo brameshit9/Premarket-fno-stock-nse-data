@@ -1,6 +1,9 @@
+import time
 import streamlit as st
 import requests
+import numpy as np
 import pandas as pd
+import pytz
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -14,6 +17,8 @@ UP_SOFT = '#DCFCE7'
 DOWN_SOFT = '#FEE2E2'
 TEXT = '#1E293B'
 MUTED = '#64748B'
+WARN = '#D97706'
+WARN_SOFT = '#FEF3C7'
 
 Securities_FNO = [
     "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES",
@@ -64,17 +69,55 @@ def fetch_preopen(session):
 
 
 def to_dataframe(raw, symbols):
-    rows = [
-        {
-            "symbol": item["metadata"]["symbol"],
-            "price": item["metadata"]["lastPrice"],
-            "change": item["metadata"]["pChange"],
-        }
-        for item in raw["data"]
-        if item["metadata"]["symbol"] in symbols
-    ]
+    rows = []
+    for item in raw.get("data", []):
+        meta = item.get("metadata", {})
+        pre = item.get("detail", {}).get("preOpenMarket", {})
+        symbol = meta.get("symbol")
+        if symbol not in symbols:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "price": meta.get("lastPrice"),
+                "change": meta.get("pChange"),
+                "prevClose": meta.get("previousClose"),
+                "iep": pre.get("IEP", meta.get("iep")),
+                "yearHigh": meta.get("yearHigh"),
+                "yearLow": meta.get("yearLow"),
+                "buyQty": pre.get("totalBuyQuantity"),
+                "sellQty": pre.get("totalSellQuantity"),
+            }
+        )
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    buy = df["buyQty"].fillna(0)
+    sell = df["sellQty"].fillna(0)
+    total_qty = buy + sell
+    df["orderImbalance"] = np.where(total_qty > 0, (buy - sell) / total_qty, np.nan)
+    df["nearCircuit"] = df["change"].abs() >= 9
+    df["watchScore"] = df["change"].abs() * (1 + df["orderImbalance"].abs().fillna(0))
+
     return df.sort_values("change", ascending=True).reset_index(drop=True)
+
+
+def is_preopen_session_live():
+    """Check whether we're inside NSE's 9:00-9:15 AM IST pre-open window."""
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+    if now.weekday() >= 5:
+        return False, "Weekend — market closed, data is stale.", now
+    start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    end = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    if start <= now <= end:
+        return True, "Live pre-open window.", now
+    return (
+        False,
+        "Outside 9:00–9:15 AM IST window — this is a STALE/previous-session snapshot, not live premarket.",
+        now,
+    )
 
 
 st.set_page_config(page_title="Securities_FNO Pre-Market Dashboard", layout="wide", page_icon="📊")
@@ -187,6 +230,21 @@ div.stButton > button:hover {{
     color: {MUTED};
     margin-top: 18px;
 }}
+
+.stale-banner {{
+    background-color: {WARN_SOFT};
+    border: 1px solid {WARN};
+    color: #92400E;
+    border-radius: 12px;
+    padding: 12px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    margin: 8px 0 20px 0;
+}}
+
+section[data-testid="stSidebar"] .stMarkdown h3 {{
+    color: {TEXT};
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -240,14 +298,27 @@ def make_bar_chart(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-header_col1, header_col2 = st.columns([5, 1])
-with header_col1:
-    st.markdown('<div class="dash-title">Securities_FNO Pre-Market Dashboard</div>', unsafe_allow_html=True)
-    st.markdown('<div class="dash-sub">NSE India &nbsp;·&nbsp; Pre-Open Session Overview</div>', unsafe_allow_html=True)
-with header_col2:
-    st.write("")
-    if st.button("↻ Refresh", use_container_width=True):
-        st.cache_data.clear()
+with st.sidebar:
+    st.markdown("### Settings")
+    top_n = st.slider("Top N gainers/losers to show", 5, 50, 30)
+    watch_n = st.slider("Watchlist size", 5, 30, 15)
+    auto_refresh = st.checkbox("Auto-refresh every 30s (during 9:00–9:15 AM IST)")
+    manual_refresh = st.button("🔄 Refresh now", use_container_width=True)
+
+if manual_refresh:
+    st.cache_data.clear()
+
+st.markdown('<div class="dash-title">Securities_FNO Pre-Market Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="dash-sub">NSE India &nbsp;·&nbsp; Pre-Open Session Overview</div>', unsafe_allow_html=True)
+
+live, note, now_ist = is_preopen_session_live()
+snapshot_time = now_ist.strftime("%Y-%m-%d %H:%M:%S")
+st.markdown(
+    f'<div class="dash-sub">Snapshot time: {snapshot_time} IST</div>',
+    unsafe_allow_html=True
+)
+if not live:
+    st.markdown(f'<div class="stale-banner">⚠️ {note}</div>', unsafe_allow_html=True)
 
 try:
     df = load_data()
@@ -260,15 +331,23 @@ except Exception as e:
     """, unsafe_allow_html=True)
     st.stop()
 
+if df.empty:
+    st.markdown(f"""
+    <div class="chart-panel">
+        <div class="panel-heading" style="color:{TEXT};">No premarket data returned</div>
+        <div style="color:{MUTED};">Try again closer to 9:00–9:15 AM IST on a trading day.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
 top_loser = df.iloc[0]
 top_gainer = df.iloc[-1]
-timestamp = datetime.now().strftime("%d %b %Y, %H:%M:%S")
 up_count = int((df["change"] >= 0).sum())
 down_count = int((df["change"] < 0).sum())
 ratio = up_count / down_count if down_count > 0 else float('inf')
 
 st.markdown(
-    f'<div class="dash-sub"><span class="live-dot"></span>Last updated {timestamp} IST</div>',
+    f'<div class="dash-sub"><span class="live-dot"></span>Last updated {datetime.now().strftime("%d %b %Y, %H:%M:%S")} IST</div>',
     unsafe_allow_html=True
 )
 st.write("")
@@ -335,8 +414,57 @@ with col2:
     st.plotly_chart(donut, use_container_width=True, config={"displayModeBar": False})
     st.markdown('</div>', unsafe_allow_html=True)
 
+st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="panel-heading">🎯 Must-check Watchlist (Top {watch_n} by move + order-imbalance conviction)</div>',
+    unsafe_allow_html=True,
+)
+watch_cols = ["symbol", "iep", "change", "orderImbalance", "nearCircuit", "watchScore"]
+watch_cols = [c for c in watch_cols if c in df.columns]
+watchlist_df = df.dropna(subset=["watchScore"]).sort_values("watchScore", ascending=False).head(watch_n)
+st.dataframe(watchlist_df[watch_cols].round(2), use_container_width=True, hide_index=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+circuit_hits = df[df["nearCircuit"] == True]  # noqa: E712
+if len(circuit_hits) > 0:
+    st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="panel-heading" style="color:{WARN};">⚠️ {len(circuit_hits)} stock(s) showing premarket move ≥9% — verify circuit limit before trading</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(circuit_hits[["symbol", "change"]].round(2), use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+gcol, lcol = st.columns(2)
+with gcol:
+    st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+    gainers = df[df["change"] > 0].sort_values("change", ascending=False).head(top_n)
+    st.markdown(
+        f'<div class="panel-heading" style="color:{UP};">🟢 Top Gainers ({min(top_n, up_count)} of {up_count})</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(gainers[["symbol", "prevClose", "iep", "change"]].round(2), use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+with lcol:
+    st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
+    losers = df[df["change"] < 0].sort_values("change", ascending=True).head(top_n)
+    st.markdown(
+        f'<div class="panel-heading" style="color:{DOWN};">🔴 Top Losers ({min(top_n, down_count)} of {down_count})</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(losers[["symbol", "prevClose", "iep", "change"]].round(2), use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with st.expander("📋 Full F&O premarket data — every stock, every field"):
+    st.dataframe(df.sort_values("change", ascending=False), use_container_width=True, hide_index=True)
+
 st.markdown(
     '<div class="footer-note">Data source: NSE India &nbsp;·&nbsp; Auto-refreshes every 60 seconds &nbsp;·&nbsp; '
     'Click Refresh for an immediate update</div>',
     unsafe_allow_html=True
 )
+
+if auto_refresh:
+    time.sleep(30)
+    st.cache_data.clear()
+    st.rerun()
