@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from datetime import datetime
 
 BG = '#F5F7FA'
@@ -33,6 +33,7 @@ Securities_FNO = [
     "PERSISTENT", "PETRONET", "PIDILITIND", "SBICARD", "UNITDSPR", "APLAPOLLO", "TATAELXSI", "INDHOTEL", "JINDALSTEL",
     "UPL", "HYUNDAI", "ABCAPITAL", "BRITANNIA", "GAIL", "CONCOR", "CAMS", "HDFCAMC", "POLYCAB", "OIL", "KALYANKJIL", "ICICIGI"
 ]
+TOTAL_SECURITIES = len(Securities_FNO)
 
 
 @st.cache_resource
@@ -197,6 +198,48 @@ def load_data():
     return to_dataframe(raw, Securities_FNO)
 
 
+def make_bar_chart(df: pd.DataFrame) -> go.Figure:
+    """Readable horizontal bar chart that scales with the number of stocks.
+
+    Instead of cramming a static-size matplotlib image with 140+ overlapping
+    labels, this uses Plotly so the chart height grows with the row count,
+    labels stay legible, and hover tooltips replace the inline text that was
+    overlapping before.
+    """
+    colors = [UP if c >= 0 else DOWN for c in df["change"]]
+
+    fig = go.Figure(
+        go.Bar(
+            x=df["change"],
+            y=df["symbol"],
+            orientation="h",
+            marker_color=colors,
+            hovertemplate="<b>%{y}</b><br>%{x:+.2f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=max(700, 26 * len(df)),   # ~26px per row so 144 stocks stay readable
+        margin=dict(l=10, r=30, t=10, b=30),
+        plot_bgcolor=CARD,
+        paper_bgcolor=CARD,
+        font=dict(family="Inter, sans-serif", color=TEXT, size=12),
+        xaxis=dict(
+            title="% Change",
+            gridcolor=BORDER,
+            zeroline=True,
+            zerolinecolor=MUTED,
+            zerolinewidth=1,
+        ),
+        yaxis=dict(
+            tickfont=dict(size=11),
+            automargin=True,
+        ),
+        bargap=0.25,
+        showlegend=False,
+    )
+    return fig
+
+
 header_col1, header_col2 = st.columns([5, 1])
 with header_col1:
     st.markdown('<div class="dash-title">Securities_FNO Pre-Market Dashboard</div>', unsafe_allow_html=True)
@@ -235,12 +278,12 @@ with k1:
     st.markdown(f"""<div class="kpi-card">
         <div class="kpi-label">Advancers</div>
         <div class="kpi-value up">{up_count}</div>
-        <div class="kpi-badge up">of 50 stocks</div></div>""", unsafe_allow_html=True)
+        <div class="kpi-badge up">of {TOTAL_SECURITIES} stocks</div></div>""", unsafe_allow_html=True)
 with k2:
     st.markdown(f"""<div class="kpi-card">
         <div class="kpi-label">Decliners</div>
         <div class="kpi-value down">{down_count}</div>
-        <div class="kpi-badge down">of 50 stocks</div></div>""", unsafe_allow_html=True)
+        <div class="kpi-badge down">of {TOTAL_SECURITIES} stocks</div></div>""", unsafe_allow_html=True)
 with k3:
     st.markdown(f"""<div class="kpi-card">
         <div class="kpi-label">A/D Ratio</div>
@@ -263,43 +306,33 @@ col1, col2 = st.columns([3, 1])
 with col1:
     st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
     st.markdown('<div class="panel-heading">Premarket Movement — % Change</div>', unsafe_allow_html=True)
-    fig1, ax1 = plt.subplots(figsize=(10, 11))
-    fig1.patch.set_facecolor(CARD)
-    colors = [UP if c >= 0 else DOWN for c in df["change"]]
-    ax1.set_facecolor(CARD)
-    ax1.barh(df["symbol"], df["change"], color=colors, height=0.6)
-    ax1.axvline(0, color=BORDER, linewidth=1)
-    ax1.tick_params(colors=MUTED, labelsize=9)
-    for label in ax1.get_yticklabels():
-        label.set_color(TEXT)
-    for spine in ax1.spines.values():
-        spine.set_visible(False)
-    ax1.grid(axis='x', color=BORDER, linewidth=0.8)
-    ax1.set_axisbelow(True)
-    for i, change in enumerate(df["change"]):
-        ax1.text(change, i, f' {change:+.2f}%', va='center',
-                  color=TEXT, fontsize=8,
-                  ha='left' if change >= 0 else 'right')
-    st.pyplot(fig1, use_container_width=True)
+    st.plotly_chart(make_bar_chart(df), use_container_width=True, config={"displayModeBar": False})
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col2:
     st.markdown('<div class="chart-panel">', unsafe_allow_html=True)
     st.markdown('<div class="panel-heading">Market Breadth</div>', unsafe_allow_html=True)
-    fig2, ax2 = plt.subplots(figsize=(5, 5))
-    fig2.patch.set_facecolor(CARD)
-    ax2.set_facecolor(CARD)
-    wedges, texts, autotexts = ax2.pie(
-        [up_count, down_count],
-        labels=[f"Up\n{up_count}", f"Down\n{down_count}"],
-        colors=[UP, DOWN], wedgeprops={"width": 0.42, "edgecolor": CARD, "linewidth": 3},
-        autopct="%1.0f%%", startangle=90,
-        textprops={"color": TEXT, "fontsize": 10, "fontweight": "bold"}
+    donut = go.Figure(
+        go.Pie(
+            values=[up_count, down_count],
+            labels=[f"Up ({up_count})", f"Down ({down_count})"],
+            hole=0.55,
+            marker_colors=[UP, DOWN],
+            textinfo="percent",
+            textfont=dict(color="#FFFFFF", size=13),
+            hovertemplate="<b>%{label}</b><br>%{value} stocks<extra></extra>",
+        )
     )
-    for at in autotexts:
-        at.set_color('#FFFFFF')
-        at.set_fontweight('bold')
-    st.pyplot(fig2, use_container_width=True)
+    donut.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor=CARD,
+        paper_bgcolor=CARD,
+        font=dict(family="Inter, sans-serif", color=TEXT, size=12),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5),
+    )
+    st.plotly_chart(donut, use_container_width=True, config={"displayModeBar": False})
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown(
