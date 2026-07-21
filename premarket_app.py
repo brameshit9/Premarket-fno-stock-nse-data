@@ -100,51 +100,17 @@ def to_dataframe(raw, symbols):
     return df.sort_values("change", ascending=True).reset_index(drop=True)
 
 
-CSV_PATH = "preopen_fo_full.csv"
-FULL_CHART_PATH = "preopen_fo_full_chart.png"
-TOP_N = 20  # top N gainers + top N losers shown in the interactive window
-ROW_HEIGHT_IN = 0.20  # inches per bar in the full-list PNG (keeps labels legible)
-
-
-def save_full_chart(df_full):
-    """Render every symbol as a tall bar chart and save to PNG.
-    A live matplotlib window can't scroll, so all 210 rows are rendered
-    to an image tall enough that each label has room; open the PNG and
-    zoom/scroll it to read the full list.
-    """
-    n = len(df_full)
-    height = max(6, n * ROW_HEIGHT_IN)
-    fig2, ax2 = plt.subplots(figsize=(10, height))
-    fig2.patch.set_facecolor(BG_COLOR)
-
-    colors = [UP_COLOR if c >= 0 else DOWN_COLOR for c in df_full["change"]]
-    ax2.barh(df_full["symbol"], df_full["change"], color=colors)
-    ax2.set_facecolor(BG_COLOR)
-    ax2.set_xlabel("% Change", color=TEXT_COLOR)
-    ax2.tick_params(colors=TEXT_COLOR, labelsize=9)
-    ax2.set_title(
-        f"All {n} Securities in F&O — Pre-Open % Change — {datetime.now():%H:%M:%S}",
-        color=TEXT_COLOR,
-    )
-    ax2.axvline(0, color=TEXT_COLOR, linewidth=0.8)
-    ax2.margins(y=0.002)  # tight vertical spacing between the many bars
-    fig2.tight_layout()
-    fig2.savefig(FULL_CHART_PATH, dpi=150, facecolor=BG_COLOR)
-    plt.close(fig2)
-
-
 def run_with_refresh_button():
     session = get_session()
-    # Tall-ish window; readable bar chart with ~2*TOP_N rows instead of all 210.
-    fig, ax1 = plt.subplots(figsize=(12, 11))
+    fig, ax1 = plt.subplots(figsize=(12, 10))
     fig.patch.set_facecolor(BG_COLOR)
-    plt.subplots_adjust(bottom=0.06, top=0.90, left=0.22, right=0.95)
+    plt.subplots_adjust(bottom=0.08, top=0.9, left=0.2, right=0.95)
 
     def render(event=None):
         ax1.clear()
         try:
             raw = fetch_preopen(session)
-            df_full = to_dataframe(raw, SECURITIES_FO)
+            df = to_dataframe(raw, SECURITIES_FO)
         except Exception as e:
             ax1.text(
                 0.5, 0.5, f"Fetch failed:\n{e}",
@@ -154,29 +120,14 @@ def run_with_refresh_button():
             fig.canvas.draw_idle()
             return
 
-        # Full 210-row snapshot saved every refresh: CSV for the raw numbers,
-        # plus a tall PNG chart since a single on-screen chart can't legibly
-        # show all 210 symbols at once.
-        df_full.to_csv(CSV_PATH, index=False)
-        save_full_chart(df_full)
-
-        # Interactive window: bottom N losers + top N gainers only (still
-        # sorted ascending so reds are at the bottom, greens at the top).
-        losers = df_full.head(TOP_N)
-        gainers = df_full.tail(TOP_N)
-        df = pd.concat([losers, gainers]).drop_duplicates(subset="symbol")
-        df = df.sort_values("change", ascending=True).reset_index(drop=True)
-
         colors = [UP_COLOR if c >= 0 else DOWN_COLOR for c in df["change"]]
         ax1.barh(df["symbol"], df["change"], color=colors)
         ax1.set_facecolor(BG_COLOR)
         ax1.set_xlabel("% Change", color=TEXT_COLOR)
-        ax1.tick_params(colors=TEXT_COLOR, labelsize=9)
+        ax1.tick_params(colors=TEXT_COLOR, labelsize=8)
         ax1.set_title(
-            f"Top {TOP_N} Gainers & Losers — Securities in F&O — "
-            f"{datetime.now():%H:%M:%S}\n"
-            f"(full {len(df_full)}-symbol list: {CSV_PATH} / {FULL_CHART_PATH})",
-            color=TEXT_COLOR, fontsize=10,
+            f"Nifty50 Pre-Open % Change — {datetime.now():%H:%M:%S}",
+            color=TEXT_COLOR,
         )
         ax1.axvline(0, color=TEXT_COLOR, linewidth=0.8)
         fig.canvas.draw_idle()
