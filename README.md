@@ -1,63 +1,56 @@
-# F&O Premarket (NSE Pre-Open) Tracker
+# NSE F&O Universe Premarket Tracker
 
-A Streamlit app that pulls the NSE pre-open (9:00–9:15 AM IST) snapshot for
-**F&O-eligible securities only** (`key=FNO`) and surfaces gainers/losers,
-market breadth, order-imbalance signals, and a near-circuit watchlist.
+A Streamlit dashboard that tracks NSE's pre-open market data for a custom
+watchlist of F&O securities, auto-refreshing every 30 seconds.
 
-Outside the 9:00–9:15 AM IST window, the app clearly labels the data as a
-stale/previous-session snapshot rather than pretending it's live.
+## Features
+- Pulls NSE's `market-data-pre-open?key=FO` bucket and filters to your own
+  `SECURITIES_FO` symbol list (edit the list in `app.py`).
+- Auto-refreshes every 30 seconds (configurable in the sidebar).
+- Bar chart of % change per stock + market-breadth donut chart.
+- "Must-check" watchlist ranked by move size + order-imbalance conviction.
+- Near-circuit flag (≥9% premarket move) callout.
+- Gainers / losers tables and a full sortable data table.
 
-## Files
+## ⚠️ Important limitations
+- **Live only ~9:00–9:15 AM IST** on NSE trading days. Outside that window
+  the API still responds but with stale/previous-session data — the app
+  will show a warning banner.
+- **NSE blocks many datacenter/cloud IPs.** If you deploy this on Streamlit
+  Community Cloud (or any cloud host) and it keeps failing to fetch data,
+  that's NSE's bot-check rejecting the host's IP, not a bug in the app.
+  Running it locally on a residential IP is the most reliable option.
+- This dashboard is **descriptive only** — not investment advice. Always
+  verify live price and quantity before placing an order.
 
-- `app.py` — the Streamlit app
-- `requirements.txt` — Python dependencies
-
-## Run locally
+## Setup
 
 ```bash
+git clone <your-repo-url>
+cd nse-premarket-tracker
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Running locally from a residential IP is the most reliable way to avoid NSE's
-bot-check (see "NSE IP blocking" below).
+## Deploying to Streamlit Community Cloud
+1. Push this repo to GitHub.
+2. Go to [share.streamlit.io](https://share.streamlit.io), connect the repo,
+   and set the main file to `app.py`.
+3. Because of NSE's IP blocking (see above), data fetches may fail
+   intermittently on cloud hosts — the app will surface warnings when this
+   happens rather than crash.
 
-## Deploy on GitHub + Streamlit Community Cloud
+## Editing the watchlist
+Edit the `SECURITIES_FO` list near the top of `app.py` to add or remove
+symbols. Symbols must match NSE's exact ticker (e.g. `TIINDIA`, not
+`THINDIA`).
 
-1. Create a new GitHub repo (e.g. `nifty-fno-premarket-tracker`) and push these
-   two files to it:
-   ```bash
-   git init
-   git add app.py requirements.txt README.md
-   git commit -m "F&O premarket tracker"
-   git branch -M main
-   git remote add origin https://github.com/<your-username>/<repo-name>.git
-   git push -u origin main
-   ```
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with
-   GitHub.
-3. Click **"New app"**, pick your repo/branch, and set the main file path to
-   `app.py`.
-4. Click **Deploy**.
-
-## NSE IP blocking (important)
-
-NSE aggressively blocks requests coming from known datacenter/cloud IP
-ranges — this includes Streamlit Community Cloud, Google Colab, AWS, GCP,
-Azure, etc. If the deployed app repeatedly errors with 401/403:
-
-- Use the **"🔄 Refresh now"** button — sometimes a fresh session cookie gets
-  through.
-- Run the app **locally** on a normal home/office connection, where NSE
-  generally doesn't block you.
-- Route requests through a residential/rotating proxy (set up your own
-  `requests` proxy config in `get_nse_session()`), or
-- Self-host on a VPS with a non-datacenter-flagged IP (results vary).
-
-This is an NSE-side restriction, not a bug in the app.
-
-## Disclaimer
-
-This tool shows descriptive premarket market data only. It is not investment
-advice. Always verify live price and quantity on your broker's terminal
-before placing any order.
+## Project structure
+```
+.
+├── app.py              # Streamlit app (fetch, parse, signals, UI)
+├── requirements.txt
+└── README.md
+```
